@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 import logging
 import pytz
@@ -20,6 +21,7 @@ logging.basicConfig(
 class Mod(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self.role_locks = {}
 
     def get_votes_embed(self, ctx):
         embed = discord.Embed(title='Current Votes', color=0xFF0000)
@@ -727,6 +729,40 @@ class Mod(commands.Cog):
                         value=output, inline=False)
         mod_chat = discord.utils.get(ctx.guild.text_channels, name=config['names']['mod_chat'])
         await mod_chat.send(content=None, embed=embed)
+
+    @commands.command(help='Mod command to mute a role')
+    @commands.has_permissions(manage_roles=True)
+    async def mute_role(self, ctx, role: discord.Role, duration: int = 300):
+        config = get_config(ctx)
+        if not await self.is_mod(ctx):
+            await ctx.message.add_reaction('🖕')
+            await ctx.send(f'{config["messages"]["mod_check"]}')
+            return
+
+        mod_chat = discord.utils.get(ctx.guild.text_channels, name=config['names']['mod_chat'])
+        lock = self.role_locks.setdefault(role.id, asyncio.Lock())
+
+        if lock.locked():
+            await mod_chat.send(f"{role.name} is already being muted.")
+            return
+
+        async with lock:
+            # Mute
+            for channel in ctx.guild.text_channels:
+                overwrite = channel.overwrites_for(role)
+                overwrite.send_messages = False
+                await channel.set_permissions(role, overwrite=overwrite)
+
+            await mod_chat.send(f"Muted role {role.name} for {duration} seconds.")
+            await asyncio.sleep(duration)
+
+            # Unmute
+            for channel in ctx.guild.text_channels:
+                overwrite = channel.overwrites_for(role)
+                overwrite.send_messages = None
+                await channel.set_permissions(role, overwrite=overwrite)
+
+            await mod_chat.send(f"Unmuted role {role.name}.")
 
 
 async def setup(bot):
