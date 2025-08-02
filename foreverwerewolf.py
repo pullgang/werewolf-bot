@@ -8,6 +8,7 @@ from discord.ext import commands
 
 
 date = f'{datetime.datetime.now().year}-{datetime.datetime.now().month}-{datetime.datetime.now().day}'
+os.makedirs("logs", exist_ok=True)
 logging.basicConfig(
     filename=f'logs/{date}.log',
     format='%(asctime)s - %(levelname)s - %(message)s',
