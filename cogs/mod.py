@@ -764,6 +764,13 @@ class Mod(commands.Cog):
 
             await mod_chat.send(f"Unmuted role {role.name}.")
 
+    @mute_role.error
+    async def mute_role_error(self, ctx, error):
+        if isinstance(error, commands.BadArgument):
+            await ctx.send("Couldn't find that role. Please use a valid role name/ID.")
+        else:
+            raise error
+
 
 async def setup(bot):
     await bot.add_cog(Mod(bot))
