@@ -21,7 +21,7 @@ logging.basicConfig(
 class Mod(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.role_locks = {}
+        self.mute_tasks = {}
 
     def get_votes_embed(self, ctx):
         embed = discord.Embed(title='Current Votes', color=0xFF0000)
@@ -736,36 +736,76 @@ class Mod(commands.Cog):
         config = get_config(ctx)
         if not await self.is_mod(ctx):
             await ctx.message.add_reaction('🖕')
-            await ctx.send(f'{config["messages"]["mod_check"]}')
+            await ctx.send(config["messages"]["mod_check"])
             return
 
         mod_chat = discord.utils.get(ctx.guild.text_channels, name=config['names']['mod_chat'])
-        lock = self.role_locks.setdefault(role.id, asyncio.Lock())
 
-        if lock.locked():
+        # Cancel existing task if one is running
+        task = self.mute_tasks.get(role.id)
+        if task and not task.done():
             await mod_chat.send(f"{role.name} is already being muted.")
             return
 
-        async with lock:
-            # Mute
-            for channel in ctx.guild.text_channels:
-                overwrite = channel.overwrites_for(role)
-                overwrite.send_messages = False
-                await channel.set_permissions(role, overwrite=overwrite)
+        # Mute immediately
+        for channel in ctx.guild.text_channels:
+            overwrite = channel.overwrites_for(role)
+            overwrite.send_messages = False
+            await channel.set_permissions(role, overwrite=overwrite)
 
-            await mod_chat.send(f"Muted role {role.name} for {duration} seconds.")
+        await mod_chat.send(f"Muted role {role.name} for {duration} seconds.")
+
+        # Schedule unmute task
+        self.mute_tasks[role.id] = asyncio.create_task(self._unmute_after(ctx, role, duration, mod_chat))
+
+    async def _unmute_after(self, ctx, role, duration, mod_chat):
+        try:
             await asyncio.sleep(duration)
+        except asyncio.CancelledError:
+            await logging.info(f"Unmute for role {role.name} was cancelled.")
+            return
 
-            # Unmute
-            for channel in ctx.guild.text_channels:
-                overwrite = channel.overwrites_for(role)
-                overwrite.send_messages = None
-                await channel.set_permissions(role, overwrite=overwrite)
+        for channel in ctx.guild.text_channels:
+            overwrite = channel.overwrites_for(role)
+            overwrite.send_messages = None
+            await channel.set_permissions(role, overwrite=overwrite)
 
-            await mod_chat.send(f"Unmuted role {role.name}.")
+        await mod_chat.send(f"Unmuted role {role.name}.")
+        self.mute_tasks.pop(role.id, None)
+
+    @commands.command(help='Mod command to force unmute a role early')
+    @commands.has_permissions(manage_roles=True)
+    async def unmute_role(self, ctx, role: discord.Role):
+        config = get_config(ctx)
+        if not await self.is_mod(ctx):
+            await ctx.message.add_reaction('🖕')
+            await ctx.send(config["messages"]["mod_check"])
+            return
+
+        mod_chat = discord.utils.get(ctx.guild.text_channels, name=config['names']['mod_chat'])
+
+        # Cancel scheduled task
+        task = self.mute_tasks.pop(role.id, None)
+        if task and not task.done():
+            task.cancel()
+
+        # Force unmute
+        for channel in ctx.guild.text_channels:
+            overwrite = channel.overwrites_for(role)
+            overwrite.send_messages = None
+            await channel.set_permissions(role, overwrite=overwrite)
+
+        await mod_chat.send(f"Unmuted role {role.name}.")
 
     @mute_role.error
     async def mute_role_error(self, ctx, error):
+        if isinstance(error, commands.BadArgument):
+            await ctx.send("Couldn't find that role. Please use a valid role name/ID.")
+        else:
+            raise error
+
+    @unmute_role.error
+    async def unmute_role_error(self, ctx, error):
         if isinstance(error, commands.BadArgument):
             await ctx.send("Couldn't find that role. Please use a valid role name/ID.")
         else:
